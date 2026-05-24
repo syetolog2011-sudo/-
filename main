@@ -5,7 +5,7 @@ import sys
 import telebot
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Токен от @BotFather
+TOKEN = os.getenv("BOT_TOKEN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 DB_NAME = "tycoon_game.db"
