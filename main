@@ -1,13 +1,11 @@
-import sqlite3
-import time
-import threading
-import sys
+import os
 import telebot
+import sqlite3
+import random
 
-# --- НАСТРОЙКИ ---
+# Теперь Python поймет команду os.getenv
 TOKEN = os.getenv("BOT_TOKEN")
-
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(TOKEN)
 DB_NAME = "tycoon_game.db"
 
 # Магазин улучшений
