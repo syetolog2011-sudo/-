@@ -155,6 +155,49 @@ def show_top(message):
         text += f"{i}. *{user[0]}* — {int(user[1])} $\n"
     bot.reply_to(message, text, parse_mode='Markdown')
 
+# --- ВЫДАЧА БАЛАНСА ЧЕРЕЗ TELEGRAM ДЛЯ АДМИНИСТРАТОРА ---
+ADMIN_ID = 1991878700  
+
+@bot.message_handler(commands=['give'])
+def tg_give_money(message):
+    # Проверяем, что команду отправил именно ты
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ У тебя нет прав администратора!")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        bot.reply_to(message, "❌ Ошибка. Пример использования:\n`/give 1991878700 50000`", parse_mode='Markdown')
+        return
+
+    try:
+        target_uid = int(args[1])
+        amount = float(args[2])
+
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Проверяем наличие игрока в базе
+        cursor.execute("SELECT username FROM users WHERE user_id = ?", (target_uid,))
+        user_exists = cursor.fetchone()
+        
+        if not user_exists:
+            bot.reply_to(message, f"❌ Игрок с ID `{target_uid}` не найден. Ему нужно сначала написать боту /start!")
+            conn.close()
+            return
+            
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_uid))
+        conn.commit()
+        conn.close()
+
+        bot.reply_to(message, f"✅ Успешно начислено *{int(amount)} $* игроку *{user_exists[0]}* (ID: `{target_uid}`)", parse_mode='Markdown')
+    
+    except ValueError:
+        bot.reply_to(message, "❌ Ошибка: ID и сумма должны быть числами!")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка базы данных: {e}")
+
+
 # --- ТЕРМИНАЛЬНАЯ АДМИН-ПАНЕЛЬ ---
 def admin_cli():
     print("\n[Admin CLI] Панель запущена. Введите 'help' для списка команд.")
