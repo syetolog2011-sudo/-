@@ -1,0 +1,196 @@
+import sqlite3
+import time
+import threading
+import sys
+import telebot
+
+# --- НАСТРОЙКИ ---
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Токен от @BotFather
+
+bot = telebot.TeleBot(BOT_TOKEN)
+DB_NAME = "tycoon_game.db"
+
+# Магазин улучшений
+SHOP = {
+    "1": {"name": "Стажер 👶", "cost": 100, "income": 1},
+    "2": {"name": "Джун 🧑‍💻", "cost": 600, "income": 5},
+    "3": {"name": "Сеньор 🧓", "cost": 3000, "income": 30},
+    "4": {"name": "Дата-Центр 🏢", "cost": 15000, "income": 180},
+    "5": {"name": "Квантовый ИИ 🤖", "cost": 100000, "income": 1500}
+}
+
+# --- БАЗА ДАННЫХ ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            balance REAL DEFAULT 100.0,
+            income REAL DEFAULT 0.0,
+            last_update INTEGER
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inventory (
+            user_id INTEGER,
+            item_id TEXT,
+            quantity INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, item_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def get_or_create_user(user_id, username):
+    # Каждому потоку - свое соединение, чтобы избежать ошибок SQLite
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance, income, last_update FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    
+    now = int(time.time())
+    username = username if username else f"User_{user_id}"
+    
+    if not user:
+        cursor.execute("INSERT INTO users (user_id, username, balance, income, last_update) VALUES (?, ?, 100.0, 0.0, ?)", 
+                       (user_id, username, now))
+        conn.commit()
+        conn.close()
+        return 100.0, 0.0
+    
+    old_balance, income, last_update = user
+    time_passed = now - last_update
+    earnings = time_passed * income
+    new_balance = old_balance + earnings
+    
+    cursor.execute("UPDATE users SET balance = ?, last_update = ?, username = ? WHERE user_id = ?", 
+                   (new_balance, now, username, user_id))
+    conn.commit()
+    conn.close()
+    return new_balance, income
+
+# --- ЛОГИКА ТЕЛЕГРАМ ---
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    help_text = (
+        "📈 *Добро пожаловать в IT-Магнат!*\n\n"
+        "💰 `/balance` — Баланс и доход\n"
+        "🛒 `/shop` — Магазин улучшений\n"
+        "🛍 `/buy [номер]` — Купить бизнес (напр: `/buy 1`)\n"
+        "🏆 `/top` — Топ богачей чата"
+    )
+    bot.reply_to(message, help_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['balance', 'b'])
+def show_balance(message):
+    uid = message.from_user.id
+    uname = message.from_user.first_name
+    bal, inc = get_or_create_user(uid, uname)
+    bot.reply_to(message, f"🏢 *Компания:* {uname}\n💵 *Баланс:* {int(bal)} $\n⚡ *Доход:* +{inc} $/сек", parse_mode='Markdown')
+
+@bot.message_handler(commands=['shop'])
+def show_shop(message):
+    text = "🛒 *Магазин улучшений:*\n\n"
+    for k, v in SHOP.items():
+        text += f"*{k}*. {v['name']}\n 💰 Цена: {v['cost']} $ | ⚡ Доход: +{v['income']}/с\n\n"
+    bot.reply_to(message, text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['buy'])
+def buy_item(message):
+    uid = message.from_user.id
+    uname = message.from_user.first_name
+    args = message.text.split()
+    
+    if len(args) < 2 or args[1] not in SHOP:
+        bot.reply_to(message, "❌ Укажите номер товара. Пример: `/buy 1`")
+        return
+    
+    item_id = args[1]
+    item = SHOP[item_id]
+    bal, inc = get_or_create_user(uid, uname)
+    
+    if bal < item['cost']:
+        bot.reply_to(message, f"❌ Недостаточно средств! Нужно {item['cost']} $.")
+        return
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ?, income = income + ? WHERE user_id = ?", (item['cost'], item['income'], uid))
+    cursor.execute("INSERT INTO inventory (user_id, item_id, quantity) VALUES (?, ?, 1) ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = quantity + 1", (uid, item_id))
+    conn.commit()
+    conn.close()
+    bot.reply_to(message, f"🎉 Куплено: *{item['name']}*!")
+
+@bot.message_handler(commands=['top'])
+def show_top(message):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    
+    for uid, uname in users:
+        get_or_create_user(uid, uname)
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10")
+    top_list = cursor.fetchall()
+    conn.close()
+    
+    text = "🏆 *ТОП-10 МАГНАТОВ ЧАТА:*\n\n"
+    for i, user in enumerate(top_list, 1):
+        text += f"{i}. *{user[0]}* — {int(user[1])} $\n"
+    bot.reply_to(message, text, parse_mode='Markdown')
+
+# --- ТЕРМИНАЛЬНАЯ АДМИН-ПАНЕЛЬ ---
+def admin_cli():
+    print("\n[Admin CLI] Панель запущена. Введите 'help' для списка команд.")
+    while True:
+        try:
+            cmd_input = input("👉 Admin> ").strip().split()
+            if not cmd_input: continue
+            
+            command = cmd_input[0].lower()
+            
+            if command == "help":
+                print("Команды: \n users - список игроков \n give <id> <сумма> - выдать деньги \n reset <id> - сброс \n exit - выключить")
+            elif command == "users":
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id, username, balance FROM users")
+                for r in cursor.fetchall():
+                    print(f"ID: {r[0]} | Ник: {r[1]} | Баланс: {int(r[2])}$")
+                conn.close()
+            elif command == "give":
+                uid, amount = int(cmd_input[1]), float(cmd_input[2])
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, uid))
+                conn.commit()
+                conn.close()
+                print(f" Начислено {amount}$ для {uid}")
+            elif command == "reset":
+                uid = int(cmd_input[1])
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM users WHERE user_id = ?", (uid,))
+                cursor.execute("DELETE FROM inventory WHERE user_id = ?", (uid,))
+                conn.commit()
+                conn.close()
+                print(f" Профиль {uid} удален.")
+            elif command == "exit":
+                print("Выключение...")
+                sys.exit(0)
+        except Exception as e:
+            print(f"❌ Ошибка CLI: {e}")
+
+# --- ЗАПУСК ---
+if __name__ == "__main__":
+    init_db()
+    cli_thread = threading.Thread(target=admin_cli, daemon=True)
+    cli_thread.start()
+    bot.infinity_polling()
